@@ -15,6 +15,33 @@ interface UserState {
     wasMoving?: boolean;
 }
 
+// Furniture object types
+type FurnitureType = 'desk' | 'chair' | 'plant';
+
+interface FurnitureObject {
+    id: string;
+    type: FurnitureType;
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    // Collision box (relative to x, y which is bottom-center)
+    collisionBox?: {
+        offsetX: number;
+        offsetY: number;
+        width: number;
+        height: number;
+    };
+}
+
+// Renderable entity for Z-sorting
+interface RenderableEntity {
+    type: 'avatar' | 'furniture';
+    y: number; // Used for depth sorting
+    data: UserState | FurnitureObject;
+    isLocal?: boolean;
+}
+
 interface GameCanvasProps {
     socket: Socket | null;
     isChatFocused: boolean;
@@ -36,6 +63,19 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
     const spriteSheetRef = useRef<HTMLImageElement | null>(null);
     const bgGridRef = useRef<HTMLImageElement | null>(null);
 
+    // Furniture Assets
+    const furnitureImagesRef = useRef<{ [key in FurnitureType]?: HTMLImageElement }>({});
+
+    // Furniture Objects (initial placement - can be extended with server sync later)
+    const furnitureObjectsRef = useRef<FurnitureObject[]>([
+        { id: 'desk-1', type: 'desk', x: 300, y: 250, width: 96, height: 64, collisionBox: { offsetX: -48, offsetY: -20, width: 96, height: 40 } },
+        { id: 'desk-2', type: 'desk', x: 500, y: 250, width: 96, height: 64, collisionBox: { offsetX: -48, offsetY: -20, width: 96, height: 40 } },
+        { id: 'chair-1', type: 'chair', x: 300, y: 310, width: 48, height: 48, collisionBox: { offsetX: -24, offsetY: -16, width: 48, height: 32 } },
+        { id: 'chair-2', type: 'chair', x: 500, y: 310, width: 48, height: 48, collisionBox: { offsetX: -24, offsetY: -16, width: 48, height: 32 } },
+        { id: 'plant-1', type: 'plant', x: 150, y: 200, width: 48, height: 64, collisionBox: { offsetX: -16, offsetY: -16, width: 32, height: 32 } },
+        { id: 'plant-2', type: 'plant', x: 650, y: 400, width: 48, height: 64, collisionBox: { offsetX: -16, offsetY: -16, width: 32, height: 32 } },
+    ]);
+
     // Animation State
     const frameCountRef = useRef(0);
     const currentFrameRef = useRef(0);
@@ -49,6 +89,14 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
         const bg = new Image();
         bg.src = '/assets/bg_grid.png';
         bg.onload = () => { bgGridRef.current = bg; };
+
+        // Load furniture assets
+        const furnitureTypes: FurnitureType[] = ['desk', 'chair', 'plant'];
+        furnitureTypes.forEach(type => {
+            const img = new Image();
+            img.src = `/assets/${type}.png`;
+            img.onload = () => { furnitureImagesRef.current[type] = img; };
+        });
     }, []);
 
     useEffect(() => {
@@ -153,11 +201,38 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
                 }
             }
 
+            // Collision detection helper
+            const checkCollision = (x: number, y: number): boolean => {
+                const AVATAR_RADIUS = 16; // Avatar collision radius
+                for (const furniture of furnitureObjectsRef.current) {
+                    if (!furniture.collisionBox) continue;
+                    const box = furniture.collisionBox;
+                    const boxLeft = furniture.x + box.offsetX;
+                    const boxRight = boxLeft + box.width;
+                    const boxTop = furniture.y + box.offsetY;
+                    const boxBottom = boxTop + box.height;
+
+                    // Circle-rectangle collision
+                    const closestX = Math.max(boxLeft, Math.min(x, boxRight));
+                    const closestY = Math.max(boxTop, Math.min(y, boxBottom));
+                    const distanceX = x - closestX;
+                    const distanceY = y - closestY;
+                    const distanceSquared = (distanceX * distanceX) + (distanceY * distanceY);
+
+                    if (distanceSquared < (AVATAR_RADIUS * AVATAR_RADIUS)) {
+                        return true; // Collision detected
+                    }
+                }
+                return false;
+            };
+
             // Update Local Movement
             if (localUserRef.current && !isChatFocused) {
                 const speed = 5;
                 let moved = false;
                 let direction = localUserRef.current.direction || 0; // 0: Down, 1: Left, 2: Right, 3: Up
+                const prevX = localUserRef.current.x;
+                const prevY = localUserRef.current.y;
 
                 if (keysPressed.current['ArrowUp'] || keysPressed.current['w']) {
                     localUserRef.current.y -= speed;
@@ -178,6 +253,22 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
                     localUserRef.current.x += speed;
                     moved = true;
                     direction = 2;
+                }
+
+                // Check collision and revert if necessary
+                if (moved && checkCollision(localUserRef.current.x, localUserRef.current.y)) {
+                    // Try sliding along axes
+                    localUserRef.current.x = prevX;
+                    if (checkCollision(localUserRef.current.x, localUserRef.current.y)) {
+                        localUserRef.current.y = prevY;
+                        localUserRef.current.x = prevX + (localUserRef.current.x - prevX);
+                        if (checkCollision(localUserRef.current.x, localUserRef.current.y)) {
+                            // Full revert if still colliding
+                            localUserRef.current.x = prevX;
+                            localUserRef.current.y = prevY;
+                            moved = false;
+                        }
+                    }
                 }
 
                 localUserRef.current.direction = direction;
@@ -203,17 +294,68 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
                 localUserRef.current.wasMoving = moved;
             }
 
-            // Draw Local User
+            // Collect all renderable entities for Z-sorting
+            const renderables: RenderableEntity[] = [];
+
+            // Add furniture to renderables
+            furnitureObjectsRef.current.forEach(furniture => {
+                renderables.push({
+                    type: 'furniture',
+                    y: furniture.y, // Use bottom of furniture for depth sorting
+                    data: furniture,
+                });
+            });
+
+            // Add local user to renderables
             if (localUserRef.current) {
-                drawAvatar(ctx, localUserRef.current, true);
+                renderables.push({
+                    type: 'avatar',
+                    y: localUserRef.current.y,
+                    data: localUserRef.current,
+                    isLocal: true,
+                });
             }
 
-            // Draw Other Users
+            // Add other users to renderables
             Object.values(usersRef.current).forEach(u => {
-                drawAvatar(ctx, u, false);
+                renderables.push({
+                    type: 'avatar',
+                    y: u.y,
+                    data: u,
+                    isLocal: false,
+                });
+            });
+
+            // Sort by Y position (lower Y renders first, so objects with higher Y appear in front)
+            renderables.sort((a, b) => a.y - b.y);
+
+            // Render all entities in sorted order
+            renderables.forEach(entity => {
+                if (entity.type === 'avatar') {
+                    drawAvatar(ctx, entity.data as UserState, entity.isLocal || false);
+                } else if (entity.type === 'furniture') {
+                    drawFurniture(ctx, entity.data as FurnitureObject);
+                }
             });
 
             animationFrameId = requestAnimationFrame(render);
+        };
+
+        // Draw furniture object
+        const drawFurniture = (ctx: CanvasRenderingContext2D, furniture: FurnitureObject) => {
+            const img = furnitureImagesRef.current[furniture.type];
+            if (!img) return;
+
+            ctx.save();
+            // Draw furniture centered horizontally at x, with bottom at y
+            ctx.drawImage(
+                img,
+                furniture.x - furniture.width / 2,
+                furniture.y - furniture.height,
+                furniture.width,
+                furniture.height
+            );
+            ctx.restore();
         };
 
         const drawAvatar = (ctx: CanvasRenderingContext2D, u: UserState, isLocal: boolean) => {
