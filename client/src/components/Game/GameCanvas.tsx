@@ -57,7 +57,13 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
     const keysPressed = useRef<{ [key: string]: boolean }>({});
 
     // Sprite Sheet Configuration
-    const ANIMATION_SPEED = 10; // Frames per update (lower is faster)
+    // Layout: 3x3 grid (3 columns for animation frames, 3 rows for directions)
+    // Row 0: Down (front), Row 1: Up (back), Row 2: Side (right, flip for left)
+    const ANIMATION_SPEED = 8; // Frames per update (lower is faster)
+    const SPRITE_COLS = 3; // 3 columns (animation frames)
+    const SPRITE_SHEET_SIZE = 1024;
+    const FRAME_SIZE = Math.floor(SPRITE_SHEET_SIZE / SPRITE_COLS); // ~341px per frame
+    const DISPLAY_SIZE = 64; // Size to render on canvas
 
     // Assets
     const spriteSheetRef = useRef<HTMLImageElement | null>(null);
@@ -168,7 +174,7 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
             frameCountRef.current++;
             if (frameCountRef.current >= ANIMATION_SPEED) {
                 frameCountRef.current = 0;
-                currentFrameRef.current = (currentFrameRef.current + 1) % 4; // 4 frames animation
+                currentFrameRef.current = (currentFrameRef.current + 1) % SPRITE_COLS; // 3 frames animation
             }
 
             // Clear canvas
@@ -367,37 +373,67 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
                 const direction = u.direction || 0;
                 const isMoving = u.isMoving || false;
 
-                // Row: 0=Down, 1=Left, 2=Right, 3=Up
-                const row = direction;
+                // Sprite sheet layout (3x3 grid):
+                // Row 0: Down (front facing)
+                // Row 1: Up (back facing)
+                // Row 2: Side (right facing - flip for left)
+                let row: number;
+                let flipHorizontal = false;
+
+                switch (direction) {
+                    case 0: // Down
+                        row = 0;
+                        break;
+                    case 1: // Left (use side row, flip horizontally)
+                        row = 2;
+                        flipHorizontal = true;
+                        break;
+                    case 2: // Right (use side row)
+                        row = 2;
+                        break;
+                    case 3: // Up
+                        row = 1;
+                        break;
+                    default:
+                        row = 0;
+                }
 
                 // Column: Animation frame. If not moving, use frame 0 (standing)
                 const col = isMoving ? currentFrameRef.current : 0;
 
-                // Sprite Configuration
-                const SOURCE_SIZE = 256; // Assumed frame size from 1024x1024 sheet (4x4)
-                const DISPLAY_SIZE = 64; // Size to render on canvas
+                // Apply horizontal flip if needed
+                if (flipHorizontal) {
+                    ctx.scale(-1, 1);
+                }
 
+                // Draw sprite with feet at the anchor point (y position)
+                // Character is drawn so that feet are at (0, 0) after translation
                 ctx.drawImage(
                     spriteSheetRef.current,
-                    col * SOURCE_SIZE, row * SOURCE_SIZE, SOURCE_SIZE, SOURCE_SIZE, // Source
-                    -DISPLAY_SIZE / 2, -DISPLAY_SIZE / 2, DISPLAY_SIZE, DISPLAY_SIZE // Destination (centered)
+                    col * FRAME_SIZE, row * FRAME_SIZE, FRAME_SIZE, FRAME_SIZE, // Source
+                    -DISPLAY_SIZE / 2, -DISPLAY_SIZE, DISPLAY_SIZE, DISPLAY_SIZE // Destination (feet at origin)
                 );
+
+                // Reset flip for name drawing
+                if (flipHorizontal) {
+                    ctx.scale(-1, 1);
+                }
             } else {
                 // Fallback Circle
                 ctx.shadowBlur = 15;
                 ctx.shadowColor = isLocal ? '#a855f7' : '#6366f1';
                 ctx.beginPath();
-                ctx.arc(0, 0, 20, 0, Math.PI * 2);
+                ctx.arc(0, -DISPLAY_SIZE / 2, 20, 0, Math.PI * 2);
                 ctx.fillStyle = isLocal ? '#a855f7' : '#6366f1';
                 ctx.fill();
             }
 
-            // Name
+            // Name (below the character's feet)
             ctx.shadowBlur = 0;
             ctx.fillStyle = 'white';
             ctx.font = '12px Inter';
             ctx.textAlign = 'center';
-            ctx.fillText(u.username, 0, 35);
+            ctx.fillText(u.username, 0, 12);
 
             ctx.restore();
         };
