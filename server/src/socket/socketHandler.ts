@@ -19,7 +19,7 @@ interface WorldObject {
 }
 
 interface ServerToClientEvents {
-    user_joined: (user: UserState) => void;
+    user_joined: (data: { socketId: string; user: UserState }) => void;
     user_moved: (data: { socketId: string; x: number; y: number; direction?: number; isMoving?: boolean }) => void;
     user_left: (data: { socketId: string }) => void;
     existing_users: (users: { [key: string]: UserState }) => void;
@@ -70,7 +70,7 @@ export const setupSocket = (io: Server<ClientToServerEvents, ServerToClientEvent
             };
 
             // Broadcast to others in the room
-            socket.to(roomId).emit('user_joined', users[socket.id]);
+            socket.to(roomId).emit('user_joined', { socketId: socket.id, user: users[socket.id] });
 
             // Send existing users to the new user
             const roomUsers = Object.values(users).filter(u => u.roomId === roomId).reduce((acc, u) => {
