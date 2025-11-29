@@ -6,3 +6,7 @@ build
 .env.local
 .vscode
 coverage
+
+# SQLite
+*.db
+*.db-journal

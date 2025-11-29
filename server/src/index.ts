@@ -6,6 +6,8 @@ import dotenv from 'dotenv';
 
 import authRoutes from './routes/authRoutes';
 
+import { setupSocket } from './socket/socketHandler';
+
 dotenv.config();
 
 const app = express();
@@ -17,6 +19,8 @@ const io = new Server(httpServer, {
     }
 });
 
+setupSocket(io);
+
 app.use(cors());
 app.use(express.json());
 
@@ -26,13 +30,7 @@ app.get('/', (req, res) => {
     res.send('Project Galaxy API is running');
 });
 
-io.on('connection', (socket) => {
-    console.log('User connected:', socket.id);
-
-    socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
-    });
-});
+// Removed inline io.on('connection') as it is now handled in setupSocket
 
 const PORT = process.env.PORT || 3001;
 
