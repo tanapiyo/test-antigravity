@@ -51,25 +51,29 @@ const ChatBox: React.FC<ChatBoxProps> = ({ socket, roomId, username, onFocusChan
     };
 
     return (
-        <div className="absolute bottom-4 left-4 w-80 bg-slate-900/80 backdrop-blur-md border border-white/10 rounded-xl overflow-hidden flex flex-col shadow-2xl">
+        <div className="absolute bottom-6 left-6 w-80 bg-slate-900/90 backdrop-blur-xl border border-white/10 rounded-2xl overflow-hidden flex flex-col shadow-2xl ring-1 ring-white/5">
             {/* Header */}
-            <div className="p-3 bg-white/5 border-b border-white/5">
-                <h3 className="text-sm font-bold text-white">Chat</h3>
+            <div className="p-5 bg-white/5 border-b border-white/5 flex items-center justify-between">
+                <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider">Comms Channel</h3>
+                <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]"></div>
             </div>
 
             {/* Messages */}
-            <div className="flex-1 h-64 overflow-y-auto p-3 space-y-2 scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent">
+            <div className="flex-1 h-72 overflow-y-auto p-5 space-y-4 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
                 {messages.map((msg, index) => (
                     <div key={index} className={`flex flex-col ${msg.username === username ? 'items-end' : 'items-start'}`}>
-                        <div className={`max-w-[85%] rounded-lg px-3 py-2 text-sm ${msg.username === username
-                                ? 'bg-purple-600 text-white rounded-br-none'
-                                : 'bg-slate-700 text-slate-200 rounded-bl-none'
+                        <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 text-sm shadow-sm ${msg.username === username
+                            ? 'bg-gradient-to-br from-purple-600 to-indigo-600 text-white rounded-br-sm'
+                            : 'bg-slate-800/80 text-slate-200 rounded-bl-sm border border-white/5'
                             }`}>
                             {msg.username !== username && (
-                                <span className="block text-xs text-purple-300 mb-1">{msg.username}</span>
+                                <span className="block text-[10px] font-bold text-purple-400 mb-0.5 uppercase tracking-wide">{msg.username}</span>
                             )}
-                            {msg.message}
+                            <p className="leading-relaxed">{msg.message}</p>
                         </div>
+                        <span className="text-[10px] text-slate-500 mt-1 px-1">
+                            {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        </span>
                     </div>
                 ))}
                 <div ref={messagesEndRef} />
@@ -83,8 +87,8 @@ const ChatBox: React.FC<ChatBoxProps> = ({ socket, roomId, username, onFocusChan
                     onChange={(e) => setInputValue(e.target.value)}
                     onFocus={() => onFocusChange(true)}
                     onBlur={() => onFocusChange(false)}
-                    placeholder="Type a message..."
-                    className="w-full bg-slate-800/50 border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-purple-500 transition-colors"
+                    placeholder="Transmit message..."
+                    className="w-full bg-black/20 border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-purple-500/50 focus:border-purple-500 transition-all"
                 />
             </form>
         </div>

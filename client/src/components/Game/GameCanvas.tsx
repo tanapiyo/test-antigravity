@@ -1,7 +1,8 @@
-
 import React, { useEffect, useRef } from 'react';
 import { Socket } from 'socket.io-client';
 import { useAuth } from '../../context/AuthContext';
+import { useWebRTC } from '../../hooks/useWebRTC';
+import BuildMenu from './BuildMenu';
 
 interface UserState {
     x: number;
@@ -15,31 +16,11 @@ interface UserState {
     wasMoving?: boolean;
 }
 
-// Furniture object types
-type FurnitureType = 'desk' | 'chair' | 'plant';
-
-interface FurnitureObject {
+interface WorldObject {
     id: string;
-    type: FurnitureType;
+    type: 'desk' | 'chair' | 'plant';
     x: number;
     y: number;
-    width: number;
-    height: number;
-    // Collision box (relative to x, y which is bottom-center)
-    collisionBox?: {
-        offsetX: number;
-        offsetY: number;
-        width: number;
-        height: number;
-    };
-}
-
-// Renderable entity for Z-sorting
-interface RenderableEntity {
-    type: 'avatar' | 'furniture';
-    y: number; // Used for depth sorting
-    data: UserState | FurnitureObject;
-    isLocal?: boolean;
 }
 
 interface GameCanvasProps {
@@ -52,39 +33,25 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
     const { user } = useAuth();
     const usersRef = useRef<{ [key: string]: UserState }>({});
     const localUserRef = useRef<UserState | null>(null);
+    const objectsRef = useRef<WorldObject[]>([]);
 
     // Movement state
     const keysPressed = useRef<{ [key: string]: boolean }>({});
 
     // Sprite Sheet Configuration
-    // Layout: 3x3 grid (3 columns for animation frames, 3 rows for directions)
-    // Row 0: Down (front), Row 1: Up (back), Row 2: Side (right, flip for left)
-    const ANIMATION_SPEED = 8; // Frames per update (lower is faster)
-    const SPRITE_COLS = 3; // 3 columns (animation frames)
-    const SPRITE_SHEET_SIZE = 1024;
-    const FRAME_SIZE = Math.floor(SPRITE_SHEET_SIZE / SPRITE_COLS); // ~341px per frame
-    const DISPLAY_SIZE = 64; // Size to render on canvas
+    const ANIMATION_SPEED = 10; // Frames per update (lower is faster)
 
     // Assets
     const spriteSheetRef = useRef<HTMLImageElement | null>(null);
     const bgGridRef = useRef<HTMLImageElement | null>(null);
 
-    // Furniture Assets
-    const furnitureImagesRef = useRef<{ [key in FurnitureType]?: HTMLImageElement }>({});
-
-    // Furniture Objects (initial placement - can be extended with server sync later)
-    const furnitureObjectsRef = useRef<FurnitureObject[]>([
-        { id: 'desk-1', type: 'desk', x: 300, y: 250, width: 96, height: 64, collisionBox: { offsetX: -48, offsetY: -20, width: 96, height: 40 } },
-        { id: 'desk-2', type: 'desk', x: 500, y: 250, width: 96, height: 64, collisionBox: { offsetX: -48, offsetY: -20, width: 96, height: 40 } },
-        { id: 'chair-1', type: 'chair', x: 300, y: 310, width: 48, height: 48, collisionBox: { offsetX: -24, offsetY: -16, width: 48, height: 32 } },
-        { id: 'chair-2', type: 'chair', x: 500, y: 310, width: 48, height: 48, collisionBox: { offsetX: -24, offsetY: -16, width: 48, height: 32 } },
-        { id: 'plant-1', type: 'plant', x: 150, y: 200, width: 48, height: 64, collisionBox: { offsetX: -16, offsetY: -16, width: 32, height: 32 } },
-        { id: 'plant-2', type: 'plant', x: 650, y: 400, width: 48, height: 64, collisionBox: { offsetX: -16, offsetY: -16, width: 32, height: 32 } },
-    ]);
-
     // Animation State
     const frameCountRef = useRef(0);
     const currentFrameRef = useRef(0);
+
+    // Build Mode State
+    const [isBuildMode, setIsBuildMode] = React.useState(false);
+    const [selectedObject, setSelectedObject] = React.useState<'desk' | 'chair' | 'plant' | null>(null);
 
     useEffect(() => {
         // Load assets
@@ -95,14 +62,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
         const bg = new Image();
         bg.src = '/assets/bg_grid.png';
         bg.onload = () => { bgGridRef.current = bg; };
-
-        // Load furniture assets
-        const furnitureTypes: FurnitureType[] = ['desk', 'chair', 'plant'];
-        furnitureTypes.forEach(type => {
-            const img = new Image();
-            img.src = `/assets/${type}.png`;
-            img.onload = () => { furnitureImagesRef.current[type] = img; };
-        });
     }, []);
 
     useEffect(() => {
@@ -112,12 +71,12 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
             usersRef.current = existingUsers;
         });
 
-        socket.on('user_joined', (newUser: UserState) => {
-            console.log('User joined:', newUser);
-            if (newUser.userId === user.id) {
-                localUserRef.current = newUser;
+        socket.on('user_joined', (data: { socketId: string; user: UserState }) => {
+            console.log('User joined:', data);
+            if (data.user.userId === user.id) {
+                localUserRef.current = data.user;
             } else {
-                usersRef.current[newUser.userId] = newUser;
+                usersRef.current[data.socketId] = data.user;
             }
         });
 
@@ -142,6 +101,24 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
         };
     }, [socket, user]);
 
+    // Handle Object Events
+    useEffect(() => {
+        if (!socket) return;
+
+        socket.on('object_placed', (newObject: WorldObject) => {
+            objectsRef.current.push(newObject);
+        });
+
+        socket.on('existing_objects', (objects: WorldObject[]) => {
+            objectsRef.current = objects;
+        });
+
+        return () => {
+            socket.off('object_placed');
+            socket.off('existing_objects');
+        };
+    }, [socket]);
+
     // Input handling
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -161,6 +138,56 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
         };
     }, [isChatFocused]);
 
+    // Handle Canvas Click for Placement
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        if (!canvas || !socket) return;
+
+        const handleClick = (e: MouseEvent) => {
+            if (!isBuildMode || !selectedObject) return;
+
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            socket.emit('place_object', {
+                type: selectedObject,
+                x,
+                y,
+                roomId: 'lobby' // Should be dynamic
+            });
+        };
+
+        canvas.addEventListener('click', handleClick);
+        return () => canvas.removeEventListener('click', handleClick);
+    }, [isBuildMode, selectedObject, socket]);
+
+    // Window Resize Handling
+    useEffect(() => {
+        const handleResize = () => {
+            if (canvasRef.current) {
+                canvasRef.current.width = window.innerWidth;
+                canvasRef.current.height = window.innerHeight;
+            }
+        };
+
+        window.addEventListener('resize', handleResize);
+        return () => window.removeEventListener('resize', handleResize);
+    }, []);
+
+    // WebRTC & Spatial Audio
+    const { peers, toggleMute } = useWebRTC({
+        socket,
+        userId: user?.id || ''
+    });
+    const audioRefs = useRef<{ [key: string]: HTMLAudioElement }>({});
+    const [isMuted, setIsMuted] = React.useState(false);
+
+    const handleToggleMute = () => {
+        const muted = toggleMute();
+        setIsMuted(muted);
+    };
+
     // Game Loop
     useEffect(() => {
         if (!canvasRef.current || !socket) return;
@@ -168,13 +195,27 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
+        // Create offscreen canvas for scaled background pattern
+        let bgPattern: CanvasPattern | null = null;
+        if (bgGridRef.current) {
+            const offscreen = document.createElement('canvas');
+            const GRID_SCALE = 64; // Smaller grid size
+            offscreen.width = GRID_SCALE;
+            offscreen.height = GRID_SCALE;
+            const offCtx = offscreen.getContext('2d');
+            if (offCtx) {
+                offCtx.drawImage(bgGridRef.current, 0, 0, GRID_SCALE, GRID_SCALE);
+                bgPattern = ctx.createPattern(offscreen, 'repeat');
+            }
+        }
+
         let animationFrameId: number;
 
         const render = () => {
             frameCountRef.current++;
             if (frameCountRef.current >= ANIMATION_SPEED) {
                 frameCountRef.current = 0;
-                currentFrameRef.current = (currentFrameRef.current + 1) % SPRITE_COLS; // 3 frames animation
+                currentFrameRef.current = (currentFrameRef.current + 1) % 4; // 4 frames animation
             }
 
             // Clear canvas
@@ -182,12 +223,9 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
             // Draw Background
-            if (bgGridRef.current) {
-                const pattern = ctx.createPattern(bgGridRef.current, 'repeat');
-                if (pattern) {
-                    ctx.fillStyle = pattern;
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
-                }
+            if (bgPattern) {
+                ctx.fillStyle = bgPattern;
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
             } else {
                 // Fallback Grid
                 ctx.strokeStyle = '#1e293b';
@@ -207,38 +245,11 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
                 }
             }
 
-            // Collision detection helper
-            const checkCollision = (x: number, y: number): boolean => {
-                const AVATAR_RADIUS = 16; // Avatar collision radius
-                for (const furniture of furnitureObjectsRef.current) {
-                    if (!furniture.collisionBox) continue;
-                    const box = furniture.collisionBox;
-                    const boxLeft = furniture.x + box.offsetX;
-                    const boxRight = boxLeft + box.width;
-                    const boxTop = furniture.y + box.offsetY;
-                    const boxBottom = boxTop + box.height;
-
-                    // Circle-rectangle collision
-                    const closestX = Math.max(boxLeft, Math.min(x, boxRight));
-                    const closestY = Math.max(boxTop, Math.min(y, boxBottom));
-                    const distanceX = x - closestX;
-                    const distanceY = y - closestY;
-                    const distanceSquared = (distanceX * distanceX) + (distanceY * distanceY);
-
-                    if (distanceSquared < (AVATAR_RADIUS * AVATAR_RADIUS)) {
-                        return true; // Collision detected
-                    }
-                }
-                return false;
-            };
-
             // Update Local Movement
             if (localUserRef.current && !isChatFocused) {
                 const speed = 5;
                 let moved = false;
                 let direction = localUserRef.current.direction || 0; // 0: Down, 1: Left, 2: Right, 3: Up
-                const prevX = localUserRef.current.x;
-                const prevY = localUserRef.current.y;
 
                 if (keysPressed.current['ArrowUp'] || keysPressed.current['w']) {
                     localUserRef.current.y -= speed;
@@ -259,22 +270,6 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
                     localUserRef.current.x += speed;
                     moved = true;
                     direction = 2;
-                }
-
-                // Check collision and revert if necessary
-                if (moved && checkCollision(localUserRef.current.x, localUserRef.current.y)) {
-                    // Try sliding along axes
-                    localUserRef.current.x = prevX;
-                    if (checkCollision(localUserRef.current.x, localUserRef.current.y)) {
-                        localUserRef.current.y = prevY;
-                        localUserRef.current.x = prevX + (localUserRef.current.x - prevX);
-                        if (checkCollision(localUserRef.current.x, localUserRef.current.y)) {
-                            // Full revert if still colliding
-                            localUserRef.current.x = prevX;
-                            localUserRef.current.y = prevY;
-                            moved = false;
-                        }
-                    }
                 }
 
                 localUserRef.current.direction = direction;
@@ -300,68 +295,74 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
                 localUserRef.current.wasMoving = moved;
             }
 
-            // Collect all renderable entities for Z-sorting
-            const renderables: RenderableEntity[] = [];
-
-            // Add furniture to renderables
-            furnitureObjectsRef.current.forEach(furniture => {
-                renderables.push({
-                    type: 'furniture',
-                    y: furniture.y, // Use bottom of furniture for depth sorting
-                    data: furniture,
-                });
-            });
-
-            // Add local user to renderables
+            // Spatial Audio Calculation
             if (localUserRef.current) {
-                renderables.push({
-                    type: 'avatar',
-                    y: localUserRef.current.y,
-                    data: localUserRef.current,
-                    isLocal: true,
+                Object.values(usersRef.current).forEach(u => {
+                    if (u.userId === localUserRef.current?.userId) return;
+
+                    const audioElement = audioRefs.current[u.userId];
+                    if (audioElement) {
+                        const dx = u.x - localUserRef.current!.x;
+                        const dy = u.y - localUserRef.current!.y;
+                        const distance = Math.sqrt(dx * dx + dy * dy);
+                        const MAX_DISTANCE = 600;
+
+                        // Volume decreases linearly with distance
+                        let volume = 1 - (distance / MAX_DISTANCE);
+                        volume = Math.max(0, Math.min(1, volume)); // Clamp between 0 and 1
+
+                        audioElement.volume = volume;
+                    }
                 });
             }
 
-            // Add other users to renderables
+            // Collect all renderable entities (Local User, Other Users, Objects)
+            const entities: Array<{
+                y: number;
+                type: 'user' | 'object';
+                data: any;
+                isLocal?: boolean;
+            }> = [];
+
+            if (localUserRef.current) {
+                entities.push({
+                    y: localUserRef.current.y,
+                    type: 'user',
+                    data: localUserRef.current,
+                    isLocal: true
+                });
+            }
+
             Object.values(usersRef.current).forEach(u => {
-                renderables.push({
-                    type: 'avatar',
+                entities.push({
                     y: u.y,
+                    type: 'user',
                     data: u,
-                    isLocal: false,
+                    isLocal: false
                 });
             });
 
-            // Sort by Y position (lower Y renders first, so objects with higher Y appear in front)
-            renderables.sort((a, b) => a.y - b.y);
+            objectsRef.current.forEach(obj => {
+                entities.push({
+                    y: obj.y,
+                    type: 'object',
+                    data: obj
+                });
+            });
 
-            // Render all entities in sorted order
-            renderables.forEach(entity => {
-                if (entity.type === 'avatar') {
-                    drawAvatar(ctx, entity.data as UserState, entity.isLocal || false);
-                } else if (entity.type === 'furniture') {
-                    drawFurniture(ctx, entity.data as FurnitureObject);
+            // Y-Sort entities
+            entities.sort((a, b) => a.y - b.y);
+
+            // Render Entities
+            entities.forEach(entity => {
+                if (entity.type === 'user') {
+                    drawAvatar(ctx, entity.data, entity.isLocal || false);
+                } else {
+                    drawObject(ctx, entity.data);
                 }
             });
 
             animationFrameId = requestAnimationFrame(render);
-        };
-
-        // Draw furniture object
-        const drawFurniture = (ctx: CanvasRenderingContext2D, furniture: FurnitureObject) => {
-            const img = furnitureImagesRef.current[furniture.type];
-            if (!img) return;
-
-            ctx.save();
-            // Draw furniture centered horizontally at x, with bottom at y
-            ctx.drawImage(
-                img,
-                furniture.x - furniture.width / 2,
-                furniture.y - furniture.height,
-                furniture.width,
-                furniture.height
-            );
-            ctx.restore();
         };
 
         const drawAvatar = (ctx: CanvasRenderingContext2D, u: UserState, isLocal: boolean) => {
@@ -373,68 +374,57 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
                 const direction = u.direction || 0;
                 const isMoving = u.isMoving || false;
 
-                // Sprite sheet layout (3x3 grid):
-                // Row 0: Down (front facing)
-                // Row 1: Up (back facing)
-                // Row 2: Side (right facing - flip for left)
-                let row: number;
-                let flipHorizontal = false;
-
-                switch (direction) {
-                    case 0: // Down
-                        row = 0;
-                        break;
-                    case 1: // Left (use side row, flip horizontally)
-                        row = 2;
-                        flipHorizontal = true;
-                        break;
-                    case 2: // Right (use side row)
-                        row = 2;
-                        break;
-                    case 3: // Up
-                        row = 1;
-                        break;
-                    default:
-                        row = 0;
-                }
+                // Row: 0=Down, 1=Left, 2=Right, 3=Up
+                const row = direction;
 
                 // Column: Animation frame. If not moving, use frame 0 (standing)
                 const col = isMoving ? currentFrameRef.current : 0;
 
-                // Apply horizontal flip if needed
-                if (flipHorizontal) {
-                    ctx.scale(-1, 1);
-                }
+                // Sprite Configuration
+                const SOURCE_SIZE = 256; // Assumed frame size from 1024x1024 sheet (4x4)
+                const DISPLAY_SIZE = 96; // Increased size for better visibility
 
-                // Draw sprite with feet at the anchor point (y position)
-                // Character is drawn so that feet are at (0, 0) after translation
+                // Render full frame without cropping to avoid cutting off the avatar
                 ctx.drawImage(
                     spriteSheetRef.current,
-                    col * FRAME_SIZE, row * FRAME_SIZE, FRAME_SIZE, FRAME_SIZE, // Source
-                    -DISPLAY_SIZE / 2, -DISPLAY_SIZE, DISPLAY_SIZE, DISPLAY_SIZE // Destination (feet at origin)
+                    col * SOURCE_SIZE, row * SOURCE_SIZE, SOURCE_SIZE, SOURCE_SIZE, // Source
+                    -DISPLAY_SIZE / 2, -DISPLAY_SIZE / 2, DISPLAY_SIZE, DISPLAY_SIZE // Destination (centered)
                 );
-
-                // Reset flip for name drawing
-                if (flipHorizontal) {
-                    ctx.scale(-1, 1);
-                }
             } else {
                 // Fallback Circle
                 ctx.shadowBlur = 15;
                 ctx.shadowColor = isLocal ? '#a855f7' : '#6366f1';
                 ctx.beginPath();
-                ctx.arc(0, -DISPLAY_SIZE / 2, 20, 0, Math.PI * 2);
+                ctx.arc(0, 0, 20, 0, Math.PI * 2);
                 ctx.fillStyle = isLocal ? '#a855f7' : '#6366f1';
                 ctx.fill();
             }
 
-            // Name (below the character's feet)
+            // Name
             ctx.shadowBlur = 0;
             ctx.fillStyle = 'white';
             ctx.font = '12px Inter';
             ctx.textAlign = 'center';
-            ctx.fillText(u.username, 0, 12);
+            ctx.fillText(u.username, 0, 55); // Adjusted Y offset for larger sprite
 
+            ctx.restore();
+        };
+
+        const drawObject = (ctx: CanvasRenderingContext2D, obj: WorldObject) => {
+            ctx.save();
+            ctx.translate(obj.x, obj.y);
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.font = '40px serif';
+
+            let emoji = '📦';
+            switch (obj.type) {
+                case 'desk': emoji = '🪑'; break;
+                case 'chair': emoji = '🛋️'; break;
+                case 'plant': emoji = '🪴'; break;
+            }
+
+            ctx.fillText(emoji, 0, 0);
             ctx.restore();
         };
 
@@ -443,21 +433,74 @@ const GameCanvas: React.FC<GameCanvasProps> = ({ socket, isChatFocused }) => {
         return () => {
             cancelAnimationFrame(animationFrameId);
         };
-    }, [socket, isChatFocused]);
+    }, [socket, isChatFocused, peers]); // Added peers dependency for spatial audio updates
 
     return (
-        <div className="flex items-center justify-center h-screen bg-black overflow-hidden">
+        <div className="flex items-center justify-center h-screen bg-black overflow-hidden relative">
             <canvas
                 ref={canvasRef}
                 width={window.innerWidth}
                 height={window.innerHeight}
-                className="cursor-crosshair"
+                className={'cursor-crosshair ' + (isBuildMode ? 'cursor-cell' : '')}
+            />
+
+            {/* Hidden Audio Elements for Peers */}
+            {Object.entries(peers).map(([peerId, peer]) => (
+                peer.stream && (
+                    <audio
+                        key={peerId}
+                        ref={(el) => {
+                            if (el) {
+                                el.srcObject = peer.stream!;
+                                audioRefs.current[peerId] = el;
+                            } else {
+                                delete audioRefs.current[peerId];
+                            }
+                        }}
+                        autoPlay
+                        playsInline
+                    />
+                )
+            ))}
+
+            {/* Build Menu */}
+            <BuildMenu
+                isBuildMode={isBuildMode}
+                onToggleBuildMode={() => setIsBuildMode(!isBuildMode)}
+                selectedObject={selectedObject}
+                onSelectObject={setSelectedObject}
             />
 
             {/* UI Overlay */}
-            <div className="absolute top-4 left-4 bg-black/50 backdrop-blur-md p-4 rounded-xl border border-white/10 text-white">
-                <h2 className="font-bold">Virtual Workspace</h2>
-                <p className="text-sm text-slate-300">Use WASD to move</p>
+            <div className="absolute top-6 left-6 pointer-events-none">
+                <div className="bg-slate-900/80 backdrop-blur-xl p-5 rounded-2xl border border-white/10 shadow-2xl ring-1 ring-white/5 pointer-events-auto">
+                    <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center space-x-3">
+                            <div className="w-3 h-3 rounded-full bg-purple-500 animate-pulse shadow-[0_0_10px_rgba(168,85,247,0.5)]"></div>
+                            <h2 className="font-black text-lg text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-400 tracking-tight">
+                                VIRTUAL WORKSPACE
+                            </h2>
+                        </div>
+                    </div>
+
+                    <div className="space-y-2">
+                        <div className="flex items-center space-x-2 text-xs text-slate-400 font-medium bg-black/20 px-3 py-1.5 rounded-lg border border-white/5">
+                            <span className="bg-white/10 px-1.5 py-0.5 rounded text-white">WASD</span>
+                            <span>to move</span>
+                        </div>
+
+                        <button
+                            onClick={handleToggleMute}
+                            className={`w-full flex items-center justify-center space-x-2 px-3 py-2 rounded-lg text-xs font-bold transition-all ${isMuted
+                                ? 'bg-red-500/20 text-red-400 border border-red-500/50 hover:bg-red-500/30'
+                                : 'bg-green-500/20 text-green-400 border border-green-500/50 hover:bg-green-500/30'
+                                }`}
+                        >
+                            <div className={`w-2 h-2 rounded-full ${isMuted ? 'bg-red-500' : 'bg-green-500'}`}></div>
+                            <span>{isMuted ? 'MIC MUTED' : 'MIC ACTIVE'}</span>
+                        </button>
+                    </div>
+                </div>
             </div>
         </div>
     );
